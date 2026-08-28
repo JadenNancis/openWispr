@@ -499,36 +499,38 @@ struct SettingsView: View {
 
     @ViewBuilder
     private var triggerSection: some View {
-        group(header: "Trigger") {
-            VStack(alignment: .leading, spacing: 12) {
-                OWSegmented(
-                    selection: $settings.triggerKind,
-                    options: TriggerKind.allCases.map { ($0, $0.label) }
+        group(header: "Dictation triggers") {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Both modes can be enabled at once. Each uses its own key binding.")
+                    .font(OW.ui(11.5)).foregroundStyle(OW.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+
+                triggerModeRow(
+                    title: "Double-click hands-free",
+                    subtitle: "Two presses within ~400 ms toggle dictation. Recording continues through speech pauses unless cutoff is enabled.",
+                    enabled: $settings.doubleClickEnabled,
+                    keyCode: $settings.doubleClickKeyCode,
+                    modifiers: $settings.doubleClickKeyModifiers,
+                    display: settings.doubleClickDisplay,
+                    reset: { settings.resetDoubleClickKeyToDefault() }
                 )
 
-                switch settings.triggerKind {
-                case .fnKey:
-                    infoNote("Hold the 🌐 fn key to talk, release to insert. Double-tap fn for hands-free (it keeps listening; tap fn again, or pause, to stop).")
-                case .hotkey:
-                    VStack(alignment: .leading, spacing: 10) {
-                        HStack(spacing: 10) {
-                            HotKeyRecorder(
-                                keyCode: $settings.hotKeyCode,
-                                modifiers: $settings.hotKeyModifiers
-                            )
-                            .frame(width: 150, height: 26)
+                Rectangle().fill(OW.divider).frame(height: 1)
 
-                            Text(settings.hotKeyDisplay)
-                                .font(OW.mono(13, weight: .medium))
-                                .foregroundStyle(OW.textDim)
+                triggerModeRow(
+                    title: "Push-to-talk",
+                    subtitle: "Hold key to record; release to stop and insert. Pauses while holding do not end the session.",
+                    enabled: $settings.pushToTalkEnabled,
+                    keyCode: $settings.pttKeyCode,
+                    modifiers: $settings.pttKeyModifiers,
+                    display: settings.pttDisplay,
+                    reset: { settings.resetPTTKeyToDefault() }
+                )
 
-                            Spacer()
-
-                            Button("Reset") { settings.resetHotKeyToDefault() }
-                                .buttonStyle(OWSecondaryButtonStyle())
-                        }
-                        infoNote("Click the field, then press a combo (needs at least one modifier). Press it anywhere to start and stop dictation. Esc cancels.")
-                    }
+                if !settings.doubleClickEnabled && !settings.pushToTalkEnabled {
+                    infoNote("At least one trigger mode should stay enabled, or dictation has no global activation path.", tone: .danger)
+                } else if settings.triggerBindingsConflict {
+                    infoNote("Both modes use the same key. Hold-to-talk takes priority on long presses; double-click still works on two quick presses.", tone: .muted)
                 }
             }
             .padding(14)
@@ -551,19 +553,31 @@ struct SettingsView: View {
 
         group(header: "Capture") {
             VStack(alignment: .leading, spacing: 12) {
+                toggleRow("Cutoff on speech pauses",
+                          subtitle: "When on, silence detection ends a hands-free session automatically using mic sensitivity below.",
+                          isOn: $settings.cutoffOnSpeechPause)
+
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
                         Text("Mic sensitivity")
                             .font(OW.ui(14, weight: .medium)).foregroundStyle(OW.text)
                         Spacer()
+                        if !settings.cutoffOnSpeechPause {
+                            OWStatusChip(text: "Locked", tone: .neutral)
+                        }
                     }
                     OWSegmented(
                         selection: $settings.vadSensitivity,
                         options: VADSensitivity.allCases.map { ($0, $0.label) }
                     )
-                    Text("Higher stops sooner on pauses.")
+                    .disabled(!settings.cutoffOnSpeechPause)
+                    .opacity(settings.cutoffOnSpeechPause ? 1 : 0.45)
+                    Text(settings.cutoffOnSpeechPause
+                         ? "Higher stops sooner on pauses."
+                         : "Turn on Cutoff on speech pauses to adjust sensitivity.")
                         .font(OW.ui(11.5)).foregroundStyle(OW.textMuted)
                 }
+
                 Rectangle().fill(OW.divider).frame(height: 1)
                 toggleRow("Show indicator in the notch",
                           subtitle: "Place the listening indicator at the top-center (notch area) instead of above the Dock.",
@@ -573,12 +587,63 @@ struct SettingsView: View {
         }
     }
 
+    private func triggerModeRow(
+        title: String,
+        subtitle: String,
+        enabled: Binding<Bool>,
+        keyCode: Binding<UInt32>,
+        modifiers: Binding<UInt32>,
+        display: String,
+        reset: @escaping () -> Void
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(title).font(OW.ui(14, weight: .medium)).foregroundStyle(OW.text)
+                    Text(subtitle).font(OW.ui(11.5)).foregroundStyle(OW.textMuted)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                Spacer()
+                OWToggle(isOn: enabled)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 10) {
+                    HotKeyRecorder(keyCode: keyCode, modifiers: modifiers)
+                        .frame(width: 150, height: 26)
+                        .allowsHitTesting(enabled.wrappedValue)
+
+                    Text(display)
+                        .font(OW.mono(13, weight: .medium))
+                        .foregroundStyle(OW.textDim)
+
+                    Spacer()
+
+                    Button("Reset", action: reset)
+                        .buttonStyle(OWSecondaryButtonStyle())
+                        .disabled(!enabled.wrappedValue)
+                }
+                if !enabled.wrappedValue {
+                    Text("Enable this mode to choose a key.")
+                        .font(OW.ui(11.5)).foregroundStyle(OW.textFaint)
+                } else {
+                    Text("Click the field, then press a key or combo. Esc cancels.")
+                        .font(OW.ui(11.5)).foregroundStyle(OW.textFaint)
+                }
+            }
+            .padding(12)
+            .background(enabled.wrappedValue ? OW.chip : OW.bgSunk, in: RoundedRectangle(cornerRadius: OW.rChip))
+            .overlay(RoundedRectangle(cornerRadius: OW.rChip).strokeBorder(OW.border, lineWidth: 1))
+            .opacity(enabled.wrappedValue ? 1 : 0.55)
+        }
+    }
+
     private var inputMonitoringRow: some View {
         HStack(spacing: 12) {
             VStack(alignment: .leading, spacing: 3) {
                 Text("Input Monitoring")
                     .font(OW.ui(14, weight: .medium)).foregroundStyle(OW.text)
-                Text("Lets OpenWispr see the fn key from other apps. Required for fn hold / double-tap to work everywhere. A custom shortcut works without it.")
+                Text("Lets OpenWispr see global key presses from other apps. Required for fn double-click and push-to-talk to work everywhere.")
                     .font(OW.ui(11.5)).foregroundStyle(OW.textMuted)
                     .fixedSize(horizontal: false, vertical: true)
             }

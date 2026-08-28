@@ -117,15 +117,12 @@ final class DictationController: ObservableObject {
         guard !cleaned.isEmpty else { return }
         deliveryNote = nil
         switch TextInserter.insert(cleaned, into: lastTargetApp) {
-        case .inserted:
+        case .inserted, .unverified:
             didInsert = true
-            // Clear the confirmation after a beat.
             Task { @MainActor in
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
                 self.didInsert = false
             }
-        case .unverified:
-            deliveryNote = "Couldn't confirm the insert. The text is on your clipboard."
         case .failed:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cleaned, forType: .string)
@@ -416,10 +413,21 @@ struct DictationView: View {
 
     private var hotkeyHint: some View {
         HStack(spacing: 8) {
-            keyCap(AppSettings.shared.triggerDisplay)
-            Text(AppSettings.shared.triggerKind == .fnKey ? "hold to dictate anywhere" : "to dictate anywhere")
-                .font(OW.ui(12))
-                .foregroundStyle(OW.textMuted)
+            if AppSettings.shared.doubleClickEnabled {
+                keyCap(AppSettings.shared.doubleClickDisplay)
+                Text("double-click hands-free")
+                    .font(OW.ui(12))
+                    .foregroundStyle(OW.textMuted)
+            }
+            if AppSettings.shared.pushToTalkEnabled {
+                if AppSettings.shared.doubleClickEnabled {
+                    Text("·").font(OW.ui(12)).foregroundStyle(OW.textFaint)
+                }
+                keyCap(AppSettings.shared.pttDisplay)
+                Text("hold to talk")
+                    .font(OW.ui(12))
+                    .foregroundStyle(OW.textMuted)
+            }
             Spacer()
             HStack(spacing: 5) {
                 Image(systemName: controller.canInsert ? "checkmark.shield.fill" : "shield.slash")

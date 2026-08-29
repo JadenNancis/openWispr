@@ -685,18 +685,22 @@ struct SettingsView: View {
         group(header: "History") {
             VStack(alignment: .leading, spacing: 10) {
                 toggleRow("Keep history",
-                          subtitle: "Save finished dictations to the on-device list shown on Home.",
+                          subtitle: "Save finished dictations to Style memory and the Home list.",
                           isOn: $settings.keepHistory)
                 if settings.keepHistory {
+                    Rectangle().fill(OW.divider).frame(height: 1)
+                    textRetentionRow
                     Rectangle().fill(OW.divider).frame(height: 1)
                     audioRetentionRow
                 }
             }
             .padding(14)
             .onChange(of: settings.keepHistory) { keep in
-                // "Nothing is saved to disk" has to include the audio, so turning history off
-                // takes the retained recordings with it.
-                if !keep { pending.purgeAll() }
+                // "Nothing is saved to disk" has to include the audio and saved text.
+                if !keep {
+                    pending.purgeAll()
+                    history.clear()
+                }
             }
         }
 
@@ -706,7 +710,7 @@ struct SettingsView: View {
                 Rectangle().fill(OW.divider).frame(height: 1)
                 clearRow("Saved audio", count: pending.all().count) { pending.purgeAll() }
                 Rectangle().fill(OW.divider).frame(height: 1)
-                clearRow("Style memory", count: corpus.samples.count) { corpus.clear() }
+                clearRow("Style training data", count: corpus.samples.count) { corpus.clear() }
                 Rectangle().fill(OW.divider).frame(height: 1)
                 clearRow("Personal dictionary", count: vocab.entries.count) { vocab.clear() }
             }
@@ -714,6 +718,30 @@ struct SettingsView: View {
         }
 
         infoNote("Everything OpenWispr stores stays on this Mac. Nothing is uploaded.")
+    }
+
+    /// How long saved dictation text stays in Style memory / Home before auto-deletion.
+    private var textRetentionRow: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Keep text").font(OW.ui(14, weight: .medium)).foregroundStyle(OW.text)
+                Text("Saved dictations in Style memory are removed after this window.")
+                    .font(OW.ui(11.5)).foregroundStyle(OW.textMuted)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            Picker("", selection: Binding(
+                get: { history.keepDays },
+                set: { history.keepDays = $0 }
+            )) {
+                Text("7 days").tag(7)
+                Text("30 days").tag(30)
+                Text("90 days").tag(90)
+                Text("Forever").tag(0)
+            }
+            .labelsHidden()
+            .frame(width: 130)
+        }
     }
 
     /// How long recordings are kept so a dictation that failed can still be run again. Kept

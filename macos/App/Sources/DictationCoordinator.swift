@@ -71,7 +71,8 @@ final class DictationCoordinator {
     /// delivery; handed back on failure so Home can offer a retry.
     private var pendingID: UUID?
 
-    /// Backstop: force-finish a session that runs too long (e.g. if VAD never detects a pause).
+    /// Safety backstop timer — only used when cutoff-on hands-free is active (see
+    /// `startMaxDurationTimer`). Cleared in `stopLevelTimer`.
     private var maxDurationTimer: Timer?
     /// Invalidates an in-flight async `start()` when the user releases PTT early.
     private var startToken = 0
@@ -262,14 +263,15 @@ final class DictationCoordinator {
 
             do {
                 isFinishing = false
-                try audio.start(vadAutoStop: vadAutoStop) { [weak self] in
+                let onPause: (() -> Void)? = vadAutoStop ? { [weak self] in
                     Task { @MainActor in self?.finishFromVAD() }
-                }
+                } : nil
+                try audio.start(vadAutoStop: vadAutoStop, onAutoStop: onPause)
                 state = .listening
                 hud.update(.listening(level: 0))
                 hud.show()
                 startLevelTimer()
-                startMaxDurationTimer(for: vadAutoStop)
+                startMaxDurationTimer(vadAutoStop: vadAutoStop)
                 if pendingFinish {
                     pendingFinish = false
                     if sessionTrigger == .pushToTalk {
@@ -523,11 +525,19 @@ final class DictationCoordinator {
         maxDurationTimer = nil
     }
 
-    /// Force-finish after a backstop duration so a forgotten hands-free session can't run forever.
-    private func startMaxDurationTimer(for vadAutoStop: Bool) {
+    /// Optional safety backstop for a hands-free session someone left running unattended.
+    /// Normal rambling sessions are ended by the user (toggle / PTT release / Escape) or by
+    /// VAD when "Cutoff on speech pauses" is on — not by an arbitrary short time limit.
+    private func startMaxDurationTimer(vadAutoStop: Bool) {
         maxDurationTimer?.invalidate()
-        // Hands-free without cutoff has no VAD end — allow longer takes. Cutoff/PTT stay shorter.
-        let limit: TimeInterval = vadAutoStop ? 45 : 180
+        maxDurationTimer = nil
+
+        // PTT ends on key release; hands-free without cutoff ends on manual toggle.
+        if sessionTrigger == .pushToTalk { return }
+        if sessionTrigger == .doubleClick && !vadAutoStop { return }
+
+        // Cutoff-on: VAD should finish on pause. Only guard against a forgotten mic left hot.
+        let limit: TimeInterval = 4 * 3600
         let timer = Timer(timeInterval: limit, repeats: false) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.state == .listening else { return }

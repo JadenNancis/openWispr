@@ -579,9 +579,9 @@ struct SettingsView: View {
                 }
 
                 Rectangle().fill(OW.divider).frame(height: 1)
-                toggleRow("Show indicator in the notch",
-                          subtitle: "Place the listening indicator at the top-center (notch area) instead of above the Dock.",
-                          isOn: $settings.useNotchHud)
+                toggleRow("Show dictation indicator",
+                          subtitle: "Shows a coral Listening bar on every screen and changes the menu-bar icon while you dictate. Leave on unless you want silent dictation.",
+                          isOn: $settings.showDictationIndicator)
             }
             .padding(14)
         }

@@ -44,8 +44,8 @@ final class DictationCoordinator {
     private let settings = AppSettings.shared
     /// `var` (not `let`) so we can rebuild it when VAD sensitivity changes between sessions.
     private var audio: AudioCapture
-    /// Resolved per-session from settings (Apple Speech or warm-cached Whisper).
-    private let hud = RecordingHUD()
+    /// On-screen + menu-bar dictation indicator (always shown unless the user turns it off).
+    private let indicator = DictationIndicator()
     /// Global key monitor — double-click toggle + push-to-talk.
     private var triggerMonitor: FnTriggerMonitor?
     /// Escape → discard the active session immediately (listening or transcribing).
@@ -59,10 +59,10 @@ final class DictationCoordinator {
     private var state: State = .idle
     /// A finish requested before the (async) `start()` went live; applied once it does.
     private var pendingFinish = false
-    /// The app/field we'll insert back into — captured at session start. The HUD is
+    /// The app/field we'll insert back into — captured at session start. The indicator is
     /// non-activating so this stays the user's app for the whole session.
     private var targetApp: NSRunningApplication?
-    /// Drives the HUD level bar from `audio.amplitude`.
+    /// Drives the indicator level bar from `audio.amplitude`.
     private var levelTimer: Timer?
     /// Guards `finish()` against the hotkey + VAD auto-stop both firing.
     private var isFinishing = false
@@ -84,16 +84,8 @@ final class DictationCoordinator {
         let built = VADFactory.make(sensitivity: settings.vadSensitivity)
         audio = AudioCapture(vad: built.vad, config: built.config)
 
-        hud.state.onStart = { [weak self] in
-            guard let self else { return }
-            self.sessionTrigger = .doubleClick
-            self.start(vadAutoStop: self.settings.cutoffOnSpeechPause)
-        }
-        hud.state.onCancel = { [weak self] in self?.cancel() }
-        hud.state.onStop = { [weak self] in self?.finish() }
-
-        // Show the resting "Tap to talk" notch pill (when notch mode is on).
-        hud.configure(persistent: settings.useNotchHud)
+        indicator.onCancel = { [weak self] in self?.cancel() }
+        indicator.onStop = { [weak self] in self?.finish() }
 
         // Install whichever trigger the user picked (fn double-click, or a toggle hotkey).
         installTrigger()
@@ -148,12 +140,6 @@ final class DictationCoordinator {
             .dropFirst()
             .receive(on: RunLoop.main)
             .sink { [weak self] sensitivity in self?.rebuildVAD(for: sensitivity) }
-            .store(in: &cancellables)
-
-        settings.$useNotchHud
-            .dropFirst()
-            .receive(on: RunLoop.main)
-            .sink { [weak self] on in self?.hud.configure(persistent: on) }
             .store(in: &cancellables)
     }
 
@@ -237,29 +223,42 @@ final class DictationCoordinator {
         startToken += 1
         let token = startToken
 
+        // Indicator first — menu bar + overlays — before any async mic work.
+        indicator.presentListening(level: 0)
+
         Task { @MainActor in
             let mic = await AppleSpeechSTT.requestMicrophoneAccess()
-            guard token == startToken, sessionTrigger != nil else { return }
+            guard token == startToken else { return }
+            guard sessionTrigger != nil else {
+                if state == .idle { indicator.dismiss() }
+                return
+            }
             guard mic else {
                 sessionTrigger = nil
-                hud.update(.error("Enable Microphone in System Settings."))
-                hud.show()
+                indicator.presentError("Enable Microphone in System Settings.")
                 autoHide(after: 2.5)
                 return
             }
             if STTFactory.usesAppleSpeech() {
                 let speech = await AppleSpeechSTT.requestAuthorization()
-                guard token == startToken, sessionTrigger != nil else { return }
+                guard token == startToken else { return }
+                guard sessionTrigger != nil else {
+                    if state == .idle { indicator.dismiss() }
+                    return
+                }
                 guard speech else {
                     sessionTrigger = nil
-                    hud.update(.error("Enable Speech Recognition in System Settings."))
-                    hud.show()
+                    indicator.presentError("Enable Speech Recognition in System Settings.")
                     autoHide(after: 2.5)
                     return
                 }
             }
 
-            guard token == startToken, sessionTrigger != nil else { return }
+            guard token == startToken else { return }
+            guard sessionTrigger != nil else {
+                if state == .idle { indicator.dismiss() }
+                return
+            }
 
             do {
                 isFinishing = false
@@ -268,15 +267,14 @@ final class DictationCoordinator {
                 } : nil
                 try audio.start(vadAutoStop: vadAutoStop, onAutoStop: onPause)
                 state = .listening
-                hud.update(.listening(level: 0))
-                hud.show()
+                indicator.presentListening(level: 0)
                 startLevelTimer()
                 startMaxDurationTimer(vadAutoStop: vadAutoStop)
                 if pendingFinish {
                     pendingFinish = false
                     if sessionTrigger == .pushToTalk {
                         returnToIdle()
-                        hud.hide()
+                        indicator.dismiss()
                     } else {
                         finish()
                     }
@@ -284,8 +282,7 @@ final class DictationCoordinator {
             } catch {
                 sessionTrigger = nil
                 returnToIdle()
-                hud.update(.error("Couldn't start the microphone."))
-                hud.show()
+                indicator.presentError("Couldn't start the microphone.")
                 autoHide(after: 2.5)
             }
         }
@@ -320,7 +317,7 @@ final class DictationCoordinator {
         let samples = audio.stop()
         guard let samples = samples, !samples.isEmpty else {
             returnToIdle()
-            hud.update(.error("Didn't catch anything."))
+            indicator.presentError("Didn't catch anything.")
             autoHide(after: 1.8)
             return
         }
@@ -337,7 +334,7 @@ final class DictationCoordinator {
         pendingID = recording?.id
 
         state = .transcribing
-        hud.update(.transcribing)
+        indicator.presentTranscribing()
         transcribe(samples, using: STTFactory.make())
     }
 
@@ -376,17 +373,15 @@ final class DictationCoordinator {
 
     /// A failed attempt. The saved recording is deliberately left alone — this is precisely
     /// what it was written for — and handed back so Home lists it as unfinished with a retry.
-    /// A failed attempt. The saved recording is deliberately left alone — this is precisely
-    /// what it was written for — and handed back so Home lists it as unfinished with a retry.
     private func fail(_ message: String) {
         returnToIdle()
         if let id = pendingID {
             PendingAudioStore.shared.release(id)
             pendingID = nil
-            hud.update(.error("\(message) Your recording is saved. Retry it from OpenWispr."))
+            indicator.presentError("\(message) Your recording is saved. Retry it from OpenWispr.")
             autoHide(after: 3.5)
         } else {
-            hud.update(.error(message))
+            indicator.presentError(message)
             autoHide(after: 2.0)
         }
     }
@@ -433,16 +428,16 @@ final class DictationCoordinator {
         switch TextInserter.isTrusted ? TextInserter.insert(cleaned, into: targetApp) : .failed {
         case .inserted, .unverified:
             // Unverified means ⌘V was posted but AX couldn't confirm (common in Electron /
-            // browsers) — treat as success and get the HUD out of the way immediately.
-            hud.update(.inserted)
+            // browsers) — treat as success and get the indicator out of the way immediately.
+            indicator.presentInserted()
             autoHide(after: 0.45)
         case .failed:
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(cleaned, forType: .string)
-            hud.update(.message(
+            indicator.presentMessage(
                 TextInserter.isTrusted ? "Copied to your clipboard."
                                        : "Copied. Grant Accessibility to auto-insert."
-            ))
+            )
             autoHide(after: 1.2)
         }
 
@@ -475,16 +470,13 @@ final class DictationCoordinator {
 
             returnToIdle()
             isFinishing = false
-            hud.hide()
+            indicator.dismiss()
             return
         }
 
         // Dismiss a lingering post-session toast (inserted / message / error).
-        switch hud.state.phase {
-        case .idle:
-            break
-        default:
-            hud.hide()
+        if indicator.center.isActive {
+            indicator.dismiss()
         }
     }
 
@@ -502,7 +494,7 @@ final class DictationCoordinator {
         Task { @MainActor in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             // Only hide if we haven't started a new session in the meantime.
-            if state == .idle { hud.hide() }
+            if state == .idle { indicator.dismiss() }
         }
     }
 
@@ -511,7 +503,7 @@ final class DictationCoordinator {
         let timer = Timer(timeInterval: 0.05, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.state == .listening else { return }
-                self.hud.update(.listening(level: self.audio.amplitude))
+                self.indicator.updateLevel(self.audio.amplitude)
             }
         }
         RunLoop.main.add(timer, forMode: .common)

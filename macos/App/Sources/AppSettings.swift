@@ -150,6 +150,7 @@ final class AppSettings: ObservableObject {
         static let llmCreativity = "llmCreativity"
         static let antiAiGuardrails = "antiAiGuardrails"
         static let useNotchHud = "useNotchHud"
+        static let showDictationIndicator = "showDictationIndicator"
         static let holdToTalk = "holdToTalk"
         static let showMenuBarIcon = "showMenuBarIcon"
         static let dictationLanguage = "dictationLanguage"
@@ -245,10 +246,16 @@ final class AppSettings: ObservableObject {
         didSet { defaults.set(antiAiGuardrails, forKey: Key.antiAiGuardrails) }
     }
 
-    /// Place the listening indicator at the top-center (notch area) instead of near the Dock.
-    /// On by default — `RecordingHUD` reads this to pick its anchor.
+    /// Legacy notch-placement preference. Kept so existing UserDefaults values aren't lost;
+    /// the on-screen indicator is now controlled solely by `showDictationIndicator`.
     @Published var useNotchHud: Bool {
         didSet { defaults.set(useNotchHud, forKey: Key.useNotchHud) }
+    }
+
+    /// Master switch for the dictation indicator (menu-bar icon change + on-screen bar on
+    /// every display). **On by default.** Turning this off is the only way to suppress it.
+    @Published var showDictationIndicator: Bool {
+        didSet { defaults.set(showDictationIndicator, forKey: Key.showDictationIndicator) }
     }
 
     /// Legacy preference retained for migration. With the fn trigger, hold-to-talk is always on
@@ -341,6 +348,8 @@ final class AppSettings: ObservableObject {
         llmCreativity = defaults.object(forKey: Key.llmCreativity) as? Double ?? 0.2
         antiAiGuardrails = defaults.object(forKey: Key.antiAiGuardrails) as? Bool ?? true
         useNotchHud = defaults.object(forKey: Key.useNotchHud) as? Bool ?? true
+        // Always default ON — missing key means show the indicator every session.
+        showDictationIndicator = defaults.object(forKey: Key.showDictationIndicator) as? Bool ?? true
         holdToTalk = defaults.object(forKey: Key.holdToTalk) as? Bool ?? false
         showMenuBarIcon = defaults.object(forKey: Key.showMenuBarIcon) as? Bool ?? true
         dictationLanguage = defaults.string(forKey: Key.dictationLanguage) ?? "English"
